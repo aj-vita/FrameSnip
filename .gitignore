@@ -1,0 +1,19 @@
+# Build output
+bin/
+obj/
+publish/
+
+# Local .NET SDK drop
+dotnet-sdk-8.0.419-win-x64/
+
+# Visual Studio / IDE
+.vs/
+*.user
+*.suo
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log

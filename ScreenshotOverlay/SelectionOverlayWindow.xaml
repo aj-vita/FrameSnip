@@ -1,0 +1,24 @@
+<Window x:Class="ScreenshotOverlay.SelectionOverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="SelectionOverlayWindow"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        Topmost="True"
+        Cursor="Cross">
+  <Canvas x:Name="RootCanvas"
+          Background="#01000000"
+          MouseLeftButtonDown="RootCanvas_OnMouseLeftButtonDown"
+          MouseMove="RootCanvas_OnMouseMove"
+          MouseLeftButtonUp="RootCanvas_OnMouseLeftButtonUp">
+    <Rectangle x:Name="SelectionFill"
+               Visibility="Collapsed"
+               Fill="#08000000"
+               Stroke="#FFF5F5F5"
+               StrokeThickness="1"
+               StrokeDashArray="4 2" />
+  </Canvas>
+</Window>
