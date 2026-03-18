@@ -355,7 +355,7 @@
       </Grid>
 
       <Border x:Name="AnnotationToolbarHost"
-              Width="438"
+              Width="540"
               HorizontalAlignment="Left"
               VerticalAlignment="Top"
               Grid.RowSpan="2"
@@ -384,25 +384,27 @@
             </Canvas>
           </Viewbox>
         </Button>
-        <Button x:Name="EraserToolButton"
+        <Button x:Name="HighlighterToolButton"
                 Style="{StaticResource MiniButtonStyle}"
-                Click="EraserToolButton_OnClick"
-                ToolTip="Eraser">
+                Click="HighlighterToolButton_OnClick"
+                ToolTip="Highlighter">
           <Viewbox Width="14"
                    Height="14">
             <Canvas Width="20"
                     Height="20">
               <Path Stroke="White"
-                    StrokeThickness="1.7"
-                    StrokeStartLineCap="Round"
-                    StrokeEndLineCap="Round"
-                    StrokeLineJoin="Round"
-                    Data="M5,13 L9,17 L16,10 L12,6 Z" />
-              <Path Stroke="White"
                     StrokeThickness="1.5"
                     StrokeStartLineCap="Round"
                     StrokeEndLineCap="Round"
-                    Data="M4,15 L9,20" />
+                    StrokeLineJoin="Round"
+                    Data="M5,15 L9,19 L15,13 L11,9 Z" />
+              <Rectangle Width="8"
+                         Height="3"
+                         RadiusX="1"
+                         RadiusY="1"
+                         Fill="White"
+                         Canvas.Left="9"
+                         Canvas.Top="5" />
             </Canvas>
           </Viewbox>
         </Button>
@@ -444,6 +446,69 @@
               <Path Stroke="#AA141414"
                     StrokeThickness="1.2"
                     Data="M6,7 L14,13" />
+            </Canvas>
+          </Viewbox>
+        </Button>
+        <Button x:Name="TextToolButton"
+                Style="{StaticResource MiniButtonStyle}"
+                Click="TextToolButton_OnClick"
+                ToolTip="Text">
+          <Viewbox Width="14"
+                   Height="14">
+            <Canvas Width="20"
+                    Height="20">
+              <Path Stroke="White"
+                    StrokeThickness="1.8"
+                    StrokeStartLineCap="Round"
+                    StrokeEndLineCap="Round"
+                    Data="M5,5 H15 M10,5 V16 M7,16 H13" />
+            </Canvas>
+          </Viewbox>
+        </Button>
+        <Button x:Name="OcrAnnotationButton"
+                Style="{StaticResource MiniButtonStyle}"
+                Click="OcrAnnotationButton_OnClick"
+                ToolTip="OCR text">
+          <Viewbox Width="14"
+                   Height="14">
+            <Canvas Width="20"
+                    Height="20">
+              <Path Stroke="White"
+                    StrokeThickness="1.6"
+                    StrokeStartLineCap="Round"
+                    StrokeEndLineCap="Round"
+                    Data="M4,6 L16,6 M4,10 L12,10 M4,14 L10,14" />
+              <Rectangle Width="6"
+                         Height="10"
+                         RadiusX="1.5"
+                         RadiusY="1.5"
+                         Stroke="White"
+                         StrokeThickness="1.4"
+                         Fill="Transparent"
+                         Canvas.Left="11"
+                         Canvas.Top="5" />
+            </Canvas>
+          </Viewbox>
+        </Button>
+        <Button x:Name="EraserToolButton"
+                Style="{StaticResource MiniButtonStyle}"
+                Click="EraserToolButton_OnClick"
+                ToolTip="Eraser">
+          <Viewbox Width="14"
+                   Height="14">
+            <Canvas Width="20"
+                    Height="20">
+              <Path Stroke="White"
+                    StrokeThickness="1.7"
+                    StrokeStartLineCap="Round"
+                    StrokeEndLineCap="Round"
+                    StrokeLineJoin="Round"
+                    Data="M5,13 L9,17 L16,10 L12,6 Z" />
+              <Path Stroke="White"
+                    StrokeThickness="1.5"
+                    StrokeStartLineCap="Round"
+                    StrokeEndLineCap="Round"
+                    Data="M4,15 L9,20" />
             </Canvas>
           </Viewbox>
         </Button>
@@ -595,31 +660,6 @@
                     StrokeStartLineCap="Round"
                     StrokeEndLineCap="Round"
                     Data="M7,5 L7,9 L13,9 L13,5 M8,14 L12,14" />
-            </Canvas>
-          </Viewbox>
-        </Button>
-        <Button x:Name="OcrAnnotationButton"
-                Style="{StaticResource MiniButtonStyle}"
-                Click="OcrAnnotationButton_OnClick"
-                ToolTip="OCR text">
-          <Viewbox Width="14"
-                   Height="14">
-            <Canvas Width="20"
-                    Height="20">
-              <Path Stroke="White"
-                    StrokeThickness="1.6"
-                    StrokeStartLineCap="Round"
-                    StrokeEndLineCap="Round"
-                    Data="M4,6 L16,6 M4,10 L12,10 M4,14 L10,14" />
-              <Rectangle Width="6"
-                         Height="10"
-                         RadiusX="1.5"
-                         RadiusY="1.5"
-                         Stroke="White"
-                         StrokeThickness="1.4"
-                         Fill="Transparent"
-                         Canvas.Left="11"
-                         Canvas.Top="5" />
             </Canvas>
           </Viewbox>
         </Button>

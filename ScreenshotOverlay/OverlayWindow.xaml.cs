@@ -25,16 +25,21 @@ namespace ScreenshotOverlay;
 public partial class OverlayWindow : Window
 {
     private const double AnnotationToolbarHeight = 34;
-    private const double AnnotationToolbarWidth = 448;
+    private const double AnnotationToolbarWidth = 540;
     private const double CompactStatusBadgeWidth = 64;
     private const double ExpandedActiveStatusBadgeWidth = 420;
     private const double ExpandedInactiveStatusBadgeWidth = 340;
     private const double StatusBadgeHorizontalMargin = 32;
+    private const double StatusBadgeRightSafetyGap = 18;
+    private const double StatusBadgeLeftInsetWithinFrame = 14;
+    private const double StatusBadgeReservedRightZone = 92;
     private const double FrameInteractionPadding = 18;
     private const double ResizeActivationMargin = 18;
     private enum AnnotationTool
     {
         Pen,
+        Highlighter,
+        Text,
         Eraser,
         Rectangle,
         Redact,
@@ -43,14 +48,22 @@ public partial class OverlayWindow : Window
     private enum AnnotationActionKind
     {
         Stroke,
-        Shape,
+        Element,
     }
 
     private sealed class AnnotationAction
     {
         public required AnnotationActionKind Kind { get; init; }
         public Stroke? Stroke { get; init; }
-        public System.Windows.Shapes.Rectangle? Shape { get; init; }
+        public FrameworkElement? Element { get; init; }
+    }
+
+    private sealed class TextAnnotationVisual
+    {
+        public required Grid Container { get; init; }
+        public required Border Outline { get; init; }
+        public required System.Windows.Controls.TextBox Editor { get; init; }
+        public required Thumb ResizeThumb { get; init; }
     }
 
     private const double MinimumFrameWidth = 160;
@@ -74,11 +87,16 @@ public partial class OverlayWindow : Window
     private BitmapSource? _latestCapture;
     private AnnotationTool _activeTool = AnnotationTool.Pen;
     private readonly List<System.Windows.Shapes.Rectangle> _drawnRectangles = [];
+    private readonly List<TextAnnotationVisual> _textAnnotations = [];
+    private readonly Dictionary<FrameworkElement, TextAnnotationVisual> _textAnnotationLookup = [];
     private readonly List<AnnotationAction> _annotationHistory = [];
     private readonly List<AnnotationAction> _redoHistory = [];
     private System.Windows.Shapes.Rectangle? _previewRectangle;
     private System.Windows.Point? _rectangleStartPoint;
+    private System.Windows.Controls.TextBox? _activeTextEditor;
+    private TextAnnotationVisual? _selectedTextAnnotation;
     private System.Windows.Media.Color _annotationColor = System.Windows.Media.Colors.Red;
+    private int _annotationSessionVersion;
     private bool _isDraggingStatusBadge;
     private System.Windows.Point _statusBadgeDragStartScreen;
     private double _statusBadgeDragStartLeft;
@@ -442,6 +460,7 @@ public partial class OverlayWindow : Window
 
     private void EnterAnnotationMode(BitmapSource image, Int32Rect capturedBounds, bool preserveCurrentFrameBounds = false)
     {
+        _annotationSessionVersion++;
         _latestCapture = image;
         _interactiveBeforeAnnotation = _isInteractive;
         _frameBoundsBeforeAnnotation = GetScreenBounds();
@@ -482,10 +501,14 @@ public partial class OverlayWindow : Window
         AnnotationCanvas.Strokes.Clear();
         ShapeCanvas.Children.Clear();
         _drawnRectangles.Clear();
+        _textAnnotations.Clear();
+        _textAnnotationLookup.Clear();
         _annotationHistory.Clear();
         _redoHistory.Clear();
         _previewRectangle = null;
         _rectangleStartPoint = null;
+        _selectedTextAnnotation = null;
+        CancelActiveTextEditor();
         SetAnnotationTool(AnnotationTool.Pen);
         UpdateModeUi();
         ApplyClickThrough();
@@ -495,12 +518,13 @@ public partial class OverlayWindow : Window
 
         if (!preserveCurrentFrameBounds)
         {
-            ScheduleAnnotatedCaptureAlignment(capturedBounds);
+            ScheduleAnnotatedCaptureAlignment(capturedBounds, _annotationSessionVersion);
         }
     }
 
     private void ExitAnnotationMode()
     {
+        _annotationSessionVersion++;
         var shouldSuppressDuringRestore = _isConventionalAnnotationSession;
         if (shouldSuppressDuringRestore)
         {
@@ -519,6 +543,14 @@ public partial class OverlayWindow : Window
                 _windowBoundsBeforeAnnotation.Width,
                 _windowBoundsBeforeAnnotation.Height,
                 NativeMethods.SwpNoZOrder | NativeMethods.SwpNoActivate);
+
+            // Keep WPF's logical window metrics in sync with the native restore so
+            // repeated conventional captures on mixed-DPI monitors do not accumulate
+            // size drift between sessions.
+            Left = _leftBeforeAnnotation;
+            Top = _topBeforeAnnotation;
+            Width = _widthBeforeAnnotation;
+            Height = _heightBeforeAnnotation;
         }
         else if (_frameBoundsBeforeAnnotation.Width > 0 && _frameBoundsBeforeAnnotation.Height > 0)
         {
@@ -545,10 +577,14 @@ public partial class OverlayWindow : Window
         AnnotationCanvas.Strokes.Clear();
         ShapeCanvas.Children.Clear();
         _drawnRectangles.Clear();
+        _textAnnotations.Clear();
+        _textAnnotationLookup.Clear();
         _annotationHistory.Clear();
         _redoHistory.Clear();
         _previewRectangle = null;
         _rectangleStartPoint = null;
+        _selectedTextAnnotation = null;
+        CancelActiveTextEditor();
         _isConventionalAnnotationSession = false;
         UpdateModeUi();
         ApplyClickThrough();
@@ -562,7 +598,7 @@ public partial class OverlayWindow : Window
 
     private void ConfigureAnnotationCanvas()
     {
-        AnnotationCanvas.DefaultDrawingAttributes = CreateDrawingAttributes(_annotationColor);
+        AnnotationCanvas.DefaultDrawingAttributes = CreateDrawingAttributes(_annotationColor, _activeTool);
         AnnotationCanvas.EditingMode = System.Windows.Controls.InkCanvasEditingMode.Ink;
         AnnotationCanvas.PreviewMouseLeftButtonDown += AnnotationCanvas_OnPreviewMouseLeftButtonDown;
         AnnotationCanvas.PreviewMouseMove += AnnotationCanvas_OnPreviewMouseMove;
@@ -634,6 +670,13 @@ public partial class OverlayWindow : Window
             rectangleCanvas.Children.Add(CloneRectangle(rectangle));
         }
         surface.Children.Add(rectangleCanvas);
+
+        var textCanvas = new Canvas();
+        foreach (var textAnnotation in _textAnnotations)
+        {
+            textCanvas.Children.Add(CloneTextAnnotation(textAnnotation));
+        }
+        surface.Children.Add(textCanvas);
 
         surface.Measure(new System.Windows.Size(renderWidth, renderHeight));
         surface.Arrange(new Rect(0, 0, renderWidth, renderHeight));
@@ -800,10 +843,9 @@ public partial class OverlayWindow : Window
         _annotationHistory.RemoveAt(_annotationHistory.Count - 1);
         _redoHistory.Add(action);
 
-        if (action.Kind == AnnotationActionKind.Shape && action.Shape is not null)
+        if (action.Kind == AnnotationActionKind.Element && action.Element is not null)
         {
-            _drawnRectangles.Remove(action.Shape);
-            ShapeCanvas.Children.Remove(action.Shape);
+            RemoveAnnotationElement(action.Element);
             return;
         }
 
@@ -823,16 +865,26 @@ public partial class OverlayWindow : Window
         var action = _redoHistory[^1];
         _redoHistory.RemoveAt(_redoHistory.Count - 1);
 
-        if (action.Kind == AnnotationActionKind.Shape && action.Shape is not null)
+        if (action.Kind == AnnotationActionKind.Element && action.Element is not null)
         {
-            if (!_drawnRectangles.Contains(action.Shape))
+            if (action.Element is System.Windows.Shapes.Rectangle rectangle)
             {
-                _drawnRectangles.Add(action.Shape);
+                if (!_drawnRectangles.Contains(rectangle))
+                {
+                    _drawnRectangles.Add(rectangle);
+                }
+            }
+            else if (_textAnnotationLookup.TryGetValue(action.Element, out var textAnnotation))
+            {
+                if (!_textAnnotations.Contains(textAnnotation))
+                {
+                    _textAnnotations.Add(textAnnotation);
+                }
             }
 
-            if (!ShapeCanvas.Children.Contains(action.Shape))
+            if (!ShapeCanvas.Children.Contains(action.Element))
             {
-                ShapeCanvas.Children.Add(action.Shape);
+                ShapeCanvas.Children.Add(action.Element);
             }
         }
         else if (action.Kind == AnnotationActionKind.Stroke && action.Stroke is not null)
@@ -851,10 +903,14 @@ public partial class OverlayWindow : Window
         AnnotationCanvas.Strokes.Clear();
         ShapeCanvas.Children.Clear();
         _drawnRectangles.Clear();
+        _textAnnotations.Clear();
+        _textAnnotationLookup.Clear();
         _annotationHistory.Clear();
         _redoHistory.Clear();
         _previewRectangle = null;
         _rectangleStartPoint = null;
+        _selectedTextAnnotation = null;
+        CancelActiveTextEditor();
     }
 
     private void CopyAnnotationButton_OnClick(object sender, RoutedEventArgs e)
@@ -948,6 +1004,16 @@ public partial class OverlayWindow : Window
     private void PenToolButton_OnClick(object sender, RoutedEventArgs e)
     {
         SetAnnotationTool(AnnotationTool.Pen);
+    }
+
+    private void HighlighterToolButton_OnClick(object sender, RoutedEventArgs e)
+    {
+        SetAnnotationTool(AnnotationTool.Highlighter);
+    }
+
+    private void TextToolButton_OnClick(object sender, RoutedEventArgs e)
+    {
+        SetAnnotationTool(AnnotationTool.Text);
     }
 
     private void EraserToolButton_OnClick(object sender, RoutedEventArgs e)
@@ -1103,7 +1169,12 @@ public partial class OverlayWindow : Window
         var shouldExpand = _isInteractive || _isStatusBadgeHovered;
         var expandedWidth = _isInteractive ? ExpandedActiveStatusBadgeWidth : ExpandedInactiveStatusBadgeWidth;
         var requestedWidth = shouldExpand ? expandedWidth : CompactStatusBadgeWidth;
-        var maxVisibleWidth = Math.Max(CompactStatusBadgeWidth, ActualWidth - (StatusBadgeHorizontalMargin * 2));
+        var availableFrameWidth = FrameBorder.ActualWidth > 0
+            ? FrameBorder.ActualWidth - StatusBadgeLeftInsetWithinFrame - StatusBadgeRightSafetyGap - StatusBadgeReservedRightZone
+            : ActualWidth - StatusBadgeHorizontalMargin - StatusBadgeRightSafetyGap;
+        var maxVisibleWidth = Math.Max(
+            CompactStatusBadgeWidth,
+            availableFrameWidth);
         var targetWidth = Math.Min(requestedWidth, maxVisibleWidth);
         var targetOpacity = shouldExpand ? 1d : 0d;
         var isClipped = requestedWidth > maxVisibleWidth;
@@ -1165,8 +1236,8 @@ public partial class OverlayWindow : Window
             new GradientStopCollection
             {
                 new GradientStop(System.Windows.Media.Colors.White, 0),
-                new GradientStop(System.Windows.Media.Colors.White, 0.86),
-                new GradientStop(System.Windows.Media.Color.FromArgb(89, 255, 255, 255), 0.96),
+                new GradientStop(System.Windows.Media.Colors.White, 0.92),
+                new GradientStop(System.Windows.Media.Color.FromArgb(89, 255, 255, 255), 0.975),
                 new GradientStop(System.Windows.Media.Color.FromArgb(0, 255, 255, 255), 1),
             },
             new System.Windows.Point(0, 0),
@@ -1212,18 +1283,23 @@ public partial class OverlayWindow : Window
         Height = targetHeight;
     }
 
-    private void ScheduleAnnotatedCaptureAlignment(Int32Rect targetBounds)
+    private void ScheduleAnnotatedCaptureAlignment(Int32Rect targetBounds, int annotationSessionVersion)
     {
         Dispatcher.InvokeAsync(() =>
         {
-            AlignAnnotatedCaptureToBounds(targetBounds);
-            Dispatcher.InvokeAsync(() => AlignAnnotatedCaptureToBounds(targetBounds), DispatcherPriority.ApplicationIdle);
+            AlignAnnotatedCaptureToBounds(targetBounds, annotationSessionVersion);
+            Dispatcher.InvokeAsync(() => AlignAnnotatedCaptureToBounds(targetBounds, annotationSessionVersion), DispatcherPriority.ApplicationIdle);
         }, DispatcherPriority.Render);
     }
 
-    private void AlignAnnotatedCaptureToBounds(Int32Rect targetBounds)
+    private void AlignAnnotatedCaptureToBounds(Int32Rect targetBounds, int annotationSessionVersion)
     {
-        if (_hwndSource is null || AnnotationContentHost.ActualWidth <= 0 || AnnotationContentHost.ActualHeight <= 0)
+        if (_hwndSource is null ||
+            !_isAnnotating ||
+            !_isConventionalAnnotationSession ||
+            annotationSessionVersion != _annotationSessionVersion ||
+            AnnotationContentHost.ActualWidth <= 0 ||
+            AnnotationContentHost.ActualHeight <= 0)
         {
             return;
         }
@@ -1296,6 +1372,12 @@ public partial class OverlayWindow : Window
 
     private void SetAnnotationTool(AnnotationTool tool)
     {
+        CommitActiveTextEditor();
+        if (tool != AnnotationTool.Text)
+        {
+            SelectTextAnnotation(null);
+        }
+
         _activeTool = tool;
 
         var activeBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(216, 58, 52));
@@ -1304,23 +1386,31 @@ public partial class OverlayWindow : Window
         var inactiveBorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromArgb(51, 255, 255, 255));
 
         PenToolButton.Background = tool == AnnotationTool.Pen ? activeBrush : inactiveBrush;
+        HighlighterToolButton.Background = tool == AnnotationTool.Highlighter ? activeBrush : inactiveBrush;
+        TextToolButton.Background = tool == AnnotationTool.Text ? activeBrush : inactiveBrush;
         EraserToolButton.Background = tool == AnnotationTool.Eraser ? activeBrush : inactiveBrush;
         RectangleToolButton.Background = tool == AnnotationTool.Rectangle ? activeBrush : inactiveBrush;
         RedactToolButton.Background = tool == AnnotationTool.Redact ? activeBrush : inactiveBrush;
         PenToolButton.BorderBrush = tool == AnnotationTool.Pen ? activeBorderBrush : inactiveBorderBrush;
+        HighlighterToolButton.BorderBrush = tool == AnnotationTool.Highlighter ? activeBorderBrush : inactiveBorderBrush;
+        TextToolButton.BorderBrush = tool == AnnotationTool.Text ? activeBorderBrush : inactiveBorderBrush;
         EraserToolButton.BorderBrush = tool == AnnotationTool.Eraser ? activeBorderBrush : inactiveBorderBrush;
         RectangleToolButton.BorderBrush = tool == AnnotationTool.Rectangle ? activeBorderBrush : inactiveBorderBrush;
         RedactToolButton.BorderBrush = tool == AnnotationTool.Redact ? activeBorderBrush : inactiveBorderBrush;
 
-        AnnotationCanvas.IsHitTestVisible = true;
-        ShapeCanvas.IsHitTestVisible = tool == AnnotationTool.Rectangle || tool == AnnotationTool.Redact;
+        AnnotationCanvas.IsHitTestVisible = tool == AnnotationTool.Pen || tool == AnnotationTool.Highlighter || tool == AnnotationTool.Eraser;
+        ShapeCanvas.IsHitTestVisible = tool == AnnotationTool.Rectangle || tool == AnnotationTool.Redact || tool == AnnotationTool.Text || tool == AnnotationTool.Eraser;
+        ShapeCanvas.Cursor = tool == AnnotationTool.Text ? System.Windows.Input.Cursors.IBeam : System.Windows.Input.Cursors.Arrow;
 
         AnnotationCanvas.EditingMode = tool switch
         {
             AnnotationTool.Pen => InkCanvasEditingMode.Ink,
+            AnnotationTool.Highlighter => InkCanvasEditingMode.Ink,
             AnnotationTool.Eraser => InkCanvasEditingMode.EraseByStroke,
             _ => InkCanvasEditingMode.None,
         };
+
+        UpdateInkDrawingAttributes();
     }
 
     private void ShapeCanvas_OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -1328,15 +1418,17 @@ public partial class OverlayWindow : Window
         if (_activeTool == AnnotationTool.Eraser)
         {
             var position = e.GetPosition(ShapeCanvas);
-            EraseRectangleAt(position);
+            EraseAnnotationElementAt(position);
+            EraseStrokeAt(position);
             return;
         }
 
-        if (_activeTool != AnnotationTool.Rectangle && _activeTool != AnnotationTool.Redact)
+        if (_activeTool != AnnotationTool.Rectangle && _activeTool != AnnotationTool.Redact && _activeTool != AnnotationTool.Text)
         {
             return;
         }
 
+        SelectTextAnnotation(null);
         _rectangleStartPoint = e.GetPosition(ShapeCanvas);
         _previewRectangle = CreateAnnotationRectangle();
         Canvas.SetLeft(_previewRectangle, _rectangleStartPoint.Value.X);
@@ -1347,7 +1439,7 @@ public partial class OverlayWindow : Window
 
     private void ShapeCanvas_OnMouseMove(object sender, System.Windows.Input.MouseEventArgs e)
     {
-        if ((_activeTool != AnnotationTool.Rectangle && _activeTool != AnnotationTool.Redact) || _previewRectangle is null || _rectangleStartPoint is null || e.LeftButton != MouseButtonState.Pressed)
+        if ((_activeTool != AnnotationTool.Rectangle && _activeTool != AnnotationTool.Redact && _activeTool != AnnotationTool.Text) || _previewRectangle is null || _rectangleStartPoint is null || e.LeftButton != MouseButtonState.Pressed)
         {
             return;
         }
@@ -1358,7 +1450,7 @@ public partial class OverlayWindow : Window
 
     private void ShapeCanvas_OnMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
-        if ((_activeTool != AnnotationTool.Rectangle && _activeTool != AnnotationTool.Redact) || _previewRectangle is null || _rectangleStartPoint is null)
+        if ((_activeTool != AnnotationTool.Rectangle && _activeTool != AnnotationTool.Redact && _activeTool != AnnotationTool.Text) || _previewRectangle is null || _rectangleStartPoint is null)
         {
             return;
         }
@@ -1368,13 +1460,33 @@ public partial class OverlayWindow : Window
 
         if (_previewRectangle.Width >= 4 && _previewRectangle.Height >= 4)
         {
-            _drawnRectangles.Add(_previewRectangle);
-            _redoHistory.Clear();
-            _annotationHistory.Add(new AnnotationAction
+            if (_activeTool == AnnotationTool.Text)
             {
-                Kind = AnnotationActionKind.Shape,
-                Shape = _previewRectangle
-            });
+                var textAnnotation = CreateTextAnnotation(_previewRectangle);
+                ShapeCanvas.Children.Remove(_previewRectangle);
+                ShapeCanvas.Children.Add(textAnnotation.Container);
+                _textAnnotations.Add(textAnnotation);
+                _textAnnotationLookup[textAnnotation.Container] = textAnnotation;
+                _redoHistory.Clear();
+                _annotationHistory.Add(new AnnotationAction
+                {
+                    Kind = AnnotationActionKind.Element,
+                    Element = textAnnotation.Container
+                });
+                SelectTextAnnotation(textAnnotation);
+                textAnnotation.Editor.Focus();
+                textAnnotation.Editor.SelectAll();
+            }
+            else
+            {
+                _drawnRectangles.Add(_previewRectangle);
+                _redoHistory.Clear();
+                _annotationHistory.Add(new AnnotationAction
+                {
+                    Kind = AnnotationActionKind.Element,
+                    Element = _previewRectangle
+                });
+            }
         }
         else
         {
@@ -1389,14 +1501,20 @@ public partial class OverlayWindow : Window
     private System.Windows.Shapes.Rectangle CreateAnnotationRectangle()
     {
         var isRedact = _activeTool == AnnotationTool.Redact;
+        var isText = _activeTool == AnnotationTool.Text;
         return new System.Windows.Shapes.Rectangle
         {
-            Stroke = isRedact ? new SolidColorBrush(System.Windows.Media.Color.FromArgb(255, 0, 0, 0)) : new SolidColorBrush(_annotationColor),
-            StrokeThickness = isRedact ? 1 : 4,
+            Stroke = isText
+                ? new SolidColorBrush(System.Windows.Media.Color.FromArgb(180, 255, 255, 255))
+                : isRedact
+                    ? new SolidColorBrush(System.Windows.Media.Color.FromArgb(255, 0, 0, 0))
+                    : new SolidColorBrush(_annotationColor),
+            StrokeThickness = isText ? 1.5 : isRedact ? 1 : 4,
             RadiusX = 4,
             RadiusY = 4,
             Fill = isRedact ? new SolidColorBrush(System.Windows.Media.Color.FromArgb(255, 0, 0, 0)) : System.Windows.Media.Brushes.Transparent,
-            SnapsToDevicePixels = true
+            SnapsToDevicePixels = true,
+            StrokeDashArray = isText ? [4, 3] : null
         };
     }
 
@@ -1404,7 +1522,9 @@ public partial class OverlayWindow : Window
     {
         if (_activeTool == AnnotationTool.Eraser)
         {
-            EraseRectangleAt(e.GetPosition(ShapeCanvas));
+            var position = e.GetPosition(ShapeCanvas);
+            EraseAnnotationElementAt(position);
+            EraseStrokeAt(position);
         }
     }
 
@@ -1412,7 +1532,9 @@ public partial class OverlayWindow : Window
     {
         if (_activeTool == AnnotationTool.Eraser && e.LeftButton == MouseButtonState.Pressed)
         {
-            EraseRectangleAt(e.GetPosition(ShapeCanvas));
+            var position = e.GetPosition(ShapeCanvas);
+            EraseAnnotationElementAt(position);
+            EraseStrokeAt(position);
         }
     }
 
@@ -1457,6 +1579,28 @@ public partial class OverlayWindow : Window
         return clone;
     }
 
+    private FrameworkElement CloneTextAnnotation(TextAnnotationVisual source)
+    {
+        var border = new Border
+        {
+            Width = source.Container.Width,
+            Height = source.Container.Height,
+            Background = System.Windows.Media.Brushes.Transparent,
+            Child = new TextBlock
+            {
+                Text = source.Editor.Text,
+                Foreground = System.Windows.Media.Brushes.Black,
+                FontFamily = new System.Windows.Media.FontFamily("Arial"),
+                FontSize = source.Editor.FontSize,
+                TextWrapping = TextWrapping.Wrap
+            }
+        };
+
+        Canvas.SetLeft(border, Canvas.GetLeft(source.Container));
+        Canvas.SetTop(border, Canvas.GetTop(source.Container));
+        return border;
+    }
+
     private void RedColorButton_OnClick(object sender, RoutedEventArgs e)
     {
         SetAnnotationColor(System.Windows.Media.Color.FromRgb(239, 68, 68));
@@ -1489,19 +1633,26 @@ public partial class OverlayWindow : Window
     private void SetAnnotationColor(System.Windows.Media.Color color)
     {
         _annotationColor = color;
-        AnnotationCanvas.DefaultDrawingAttributes = CreateDrawingAttributes(color);
+        UpdateInkDrawingAttributes();
         UpdateColorButtons();
     }
 
-    private DrawingAttributes CreateDrawingAttributes(System.Windows.Media.Color color)
+    private void UpdateInkDrawingAttributes()
     {
+        AnnotationCanvas.DefaultDrawingAttributes = CreateDrawingAttributes(_annotationColor, _activeTool);
+    }
+
+    private DrawingAttributes CreateDrawingAttributes(System.Windows.Media.Color color, AnnotationTool tool)
+    {
+        var isHighlighter = tool == AnnotationTool.Highlighter;
         return new DrawingAttributes
         {
-            Color = color,
-            Width = 4,
-            Height = 4,
+            Color = isHighlighter ? System.Windows.Media.Color.FromArgb(120, 255, 235, 59) : color,
+            Width = isHighlighter ? 18 : 4,
+            Height = isHighlighter ? 18 : 4,
             FitToCurve = true,
             IgnorePressure = true,
+            IsHighlighter = isHighlighter,
         };
     }
 
@@ -1522,7 +1673,7 @@ public partial class OverlayWindow : Window
             : new SolidColorBrush(System.Windows.Media.Color.FromArgb(128, 255, 255, 255));
     }
 
-    private void EraseRectangleAt(System.Windows.Point position)
+    private void EraseAnnotationElementAt(System.Windows.Point position)
     {
         for (var index = _drawnRectangles.Count - 1; index >= 0; index--)
         {
@@ -1546,25 +1697,255 @@ public partial class OverlayWindow : Window
                 continue;
             }
 
-            ShapeCanvas.Children.Remove(rectangle);
-            _drawnRectangles.RemoveAt(index);
-            RemoveRectangleFromHistory(rectangle);
+            RemoveAnnotationElement(rectangle);
+            RemoveElementFromHistory(rectangle);
+            break;
+        }
+
+        for (var index = _textAnnotations.Count - 1; index >= 0; index--)
+        {
+            var annotation = _textAnnotations[index];
+            var size = GetElementSize(annotation.Container);
+            var left = Canvas.GetLeft(annotation.Container);
+            var top = Canvas.GetTop(annotation.Container);
+            var right = left + size.Width;
+            var bottom = top + size.Height;
+            var padding = 8d;
+
+            if (position.X < left - padding || position.X > right + padding || position.Y < top - padding || position.Y > bottom + padding)
+            {
+                continue;
+            }
+
+            RemoveAnnotationElement(annotation.Container);
+            RemoveElementFromHistory(annotation.Container);
             break;
         }
     }
 
-    private void RemoveRectangleFromHistory(System.Windows.Shapes.Rectangle rectangle)
+    private void RemoveElementFromHistory(FrameworkElement element)
     {
         for (var index = _annotationHistory.Count - 1; index >= 0; index--)
         {
             var action = _annotationHistory[index];
-            if (action.Kind == AnnotationActionKind.Shape && ReferenceEquals(action.Shape, rectangle))
+            if (action.Kind == AnnotationActionKind.Element && ReferenceEquals(action.Element, element))
             {
                 _annotationHistory.RemoveAt(index);
                 _redoHistory.Clear();
                 return;
             }
         }
+    }
+
+    private void RemoveAnnotationElement(FrameworkElement element)
+    {
+        if (element is System.Windows.Shapes.Rectangle rectangle)
+        {
+            _drawnRectangles.Remove(rectangle);
+        }
+        else if (_textAnnotationLookup.TryGetValue(element, out var textAnnotation))
+        {
+            _textAnnotations.Remove(textAnnotation);
+            if (ReferenceEquals(_selectedTextAnnotation, textAnnotation))
+            {
+                _selectedTextAnnotation = null;
+                _activeTextEditor = null;
+            }
+        }
+
+        ShapeCanvas.Children.Remove(element);
+    }
+
+    private TextAnnotationVisual CreateTextAnnotation(System.Windows.Shapes.Rectangle previewRectangle)
+    {
+        var editor = new System.Windows.Controls.TextBox
+        {
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            Background = System.Windows.Media.Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Foreground = System.Windows.Media.Brushes.Black,
+            CaretBrush = System.Windows.Media.Brushes.Black,
+            FontSize = GetTextFontSize(previewRectangle.Height),
+            FontFamily = new System.Windows.Media.FontFamily("Arial"),
+            FontWeight = FontWeights.Normal,
+            VerticalContentAlignment = System.Windows.VerticalAlignment.Top,
+            HorizontalContentAlignment = System.Windows.HorizontalAlignment.Left
+        };
+
+        var outline = new Border
+        {
+            BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromArgb(160, 255, 255, 255)),
+            BorderThickness = new Thickness(1),
+            Visibility = Visibility.Collapsed
+        };
+
+        var resizeThumb = new Thumb
+        {
+            Width = 16,
+            Height = 16,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
+            VerticalAlignment = System.Windows.VerticalAlignment.Bottom,
+            Margin = new Thickness(0, 0, 0, 0),
+            Cursor = System.Windows.Input.Cursors.SizeNWSE,
+            Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(220, 20, 20, 20)),
+            BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromArgb(180, 255, 255, 255)),
+            BorderThickness = new Thickness(1),
+            Visibility = Visibility.Collapsed,
+        };
+
+        var container = new Grid
+        {
+            Width = Math.Max(40, previewRectangle.Width),
+            Height = Math.Max(28, previewRectangle.Height),
+            Background = System.Windows.Media.Brushes.Transparent
+        };
+
+        editor.PreviewMouseLeftButtonDown += TextAnnotation_OnPreviewMouseLeftButtonDown;
+        resizeThumb.DragDelta += TextAnnotationResizeThumb_OnDragDelta;
+        container.Children.Add(outline);
+        container.Children.Add(editor);
+        container.Children.Add(resizeThumb);
+        container.MouseLeftButtonDown += TextAnnotationContainer_OnMouseLeftButtonDown;
+
+        Canvas.SetLeft(container, Canvas.GetLeft(previewRectangle));
+        Canvas.SetTop(container, Canvas.GetTop(previewRectangle));
+
+        return new TextAnnotationVisual
+        {
+            Container = container,
+            Outline = outline,
+            Editor = editor,
+            ResizeThumb = resizeThumb
+        };
+    }
+
+    private void EraseStrokeAt(System.Windows.Point position)
+    {
+        var hitStrokes = AnnotationCanvas.Strokes.HitTest(position, 10);
+        if (hitStrokes.Count == 0)
+        {
+            return;
+        }
+
+        for (var index = hitStrokes.Count - 1; index >= 0; index--)
+        {
+            var stroke = hitStrokes[index];
+            AnnotationCanvas.Strokes.Remove(stroke);
+            RemoveStrokeFromHistory(stroke);
+        }
+    }
+
+    private void RemoveStrokeFromHistory(Stroke stroke)
+    {
+        for (var index = _annotationHistory.Count - 1; index >= 0; index--)
+        {
+            var action = _annotationHistory[index];
+            if (action.Kind == AnnotationActionKind.Stroke && ReferenceEquals(action.Stroke, stroke))
+            {
+                _annotationHistory.RemoveAt(index);
+                _redoHistory.Clear();
+                return;
+            }
+        }
+    }
+
+    private void CommitActiveTextEditor()
+    {
+        if (_activeTextEditor is null)
+        {
+            return;
+        }
+
+        _activeTextEditor.GetBindingExpression(System.Windows.Controls.TextBox.TextProperty)?.UpdateSource();
+    }
+
+    private void CancelActiveTextEditor()
+    {
+        if (_activeTextEditor is null)
+        {
+            return;
+        }
+
+        _activeTextEditor = null;
+        SelectTextAnnotation(null);
+    }
+
+    private void TextAnnotationContainer_OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not Grid container || !_textAnnotationLookup.TryGetValue(container, out var annotation))
+        {
+            return;
+        }
+
+        SelectTextAnnotation(annotation);
+        e.Handled = true;
+    }
+
+    private void TextAnnotation_OnPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.TextBox editor)
+        {
+            return;
+        }
+
+        var annotation = _textAnnotations.FirstOrDefault(candidate => ReferenceEquals(candidate.Editor, editor));
+        if (annotation is not null)
+        {
+            SelectTextAnnotation(annotation);
+        }
+    }
+
+    private void TextAnnotationResizeThumb_OnDragDelta(object sender, DragDeltaEventArgs e)
+    {
+        var annotation = _textAnnotations.FirstOrDefault(candidate => ReferenceEquals(candidate.ResizeThumb, sender));
+        if (annotation is null)
+        {
+            return;
+        }
+
+        annotation.Container.Width = Math.Max(60, annotation.Container.Width + e.HorizontalChange);
+        annotation.Container.Height = Math.Max(28, annotation.Container.Height + e.VerticalChange);
+        annotation.Editor.FontSize = GetTextFontSize(annotation.Container.Height);
+    }
+
+    private void SelectTextAnnotation(TextAnnotationVisual? annotation)
+    {
+        if (ReferenceEquals(_selectedTextAnnotation, annotation))
+        {
+            return;
+        }
+
+        if (_selectedTextAnnotation is not null)
+        {
+            _selectedTextAnnotation.Outline.Visibility = Visibility.Collapsed;
+            _selectedTextAnnotation.ResizeThumb.Visibility = Visibility.Collapsed;
+        }
+
+        _selectedTextAnnotation = annotation;
+        _activeTextEditor = annotation?.Editor;
+
+        if (_selectedTextAnnotation is not null)
+        {
+            _selectedTextAnnotation.Outline.Visibility = Visibility.Visible;
+            _selectedTextAnnotation.ResizeThumb.Visibility = Visibility.Visible;
+        }
+    }
+
+    private static double GetTextFontSize(double containerHeight)
+    {
+        return Math.Max(12, Math.Min(64, containerHeight * 0.45));
+    }
+
+    private static System.Windows.Size GetElementSize(FrameworkElement element)
+    {
+        if (element.ActualWidth > 0 && element.ActualHeight > 0)
+        {
+            return new System.Windows.Size(element.ActualWidth, element.ActualHeight);
+        }
+
+        element.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
+        return element.DesiredSize;
     }
 
     private void ApplySnapGuides(ref double left, ref double top, ref double width, ref double height, bool snapLeft = false, bool snapTop = false, bool snapRight = false, bool snapBottom = false)
